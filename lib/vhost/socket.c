@@ -16,13 +16,14 @@
 #include "vhost.h"
 #include "vhost_user.h"
 
+#define MAX_VHOST_SOCKET 1024
+struct vhost_user {
+	struct vhost_user_socket *vsockets[MAX_VHOST_SOCKET];
+	int vsocket_cnt;
+	pthread_mutex_t mutex;
+};
+
 struct vhost_user vhost_user = {
-	.fdset = {
-		.fd = { [0 ... MAX_FDS - 1] = {-1, NULL, NULL, NULL, 0} },
-		.fd_mutex = PTHREAD_MUTEX_INITIALIZER,
-		.fd_pooling_mutex = PTHREAD_MUTEX_INITIALIZER,
-		.num = 0
-	},
 	.vsocket_cnt = 0,
 	.mutex = PTHREAD_MUTEX_INITIALIZER,
 };
@@ -431,12 +432,12 @@ out:
 int
 rte_vhost_driver_unregister(const char *path)
 {
-	int i;
-	int count;
+	int i, count, ret;
 
 	if (path == NULL)
 		return -1;
 
+again:
 	pthread_mutex_lock(&vhost_user.mutex);
 
 	for (i = 0; i < vhost_user.vsocket_cnt; i++) {
@@ -444,8 +445,11 @@ rte_vhost_driver_unregister(const char *path)
 		if (strcmp(vsocket->path, path))
 			continue;
 
-		vsocket->trans_ops->socket_cleanup(vsocket);
-
+		ret = vsocket->trans_ops->socket_cleanup(vsocket);
+		if (ret) {
+			pthread_mutex_unlock(&vhost_user.mutex);
+			goto again;
+		}
 		vhost_user_socket_mem_free(vsocket);
 		count = --vhost_user.vsocket_cnt;
 		vhost_user.vsockets[i] = vhost_user.vsockets[count];
@@ -492,7 +496,6 @@ int
 rte_vhost_driver_start(const char *path)
 {
 	struct vhost_user_socket *vsocket;
-	static pthread_t fdset_tid;
 
 	pthread_mutex_lock(&vhost_user.mutex);
 	vsocket = find_vhost_user_socket(path);
@@ -500,27 +503,6 @@ rte_vhost_driver_start(const char *path)
 
 	if (!vsocket)
 		return -1;
-
-	if (fdset_tid == 0) {
-		/**
-		 * create a pipe which will be waited by poll and notified to
-		 * rebuild the wait list of poll.
-		 */
-		if (fdset_pipe_init(&vhost_user.fdset) < 0) {
-			VHOST_LOG_CONFIG(ERR, "(%s) failed to create pipe for vhost fdset\n", path);
-			return -1;
-		}
-
-		int ret = rte_ctrl_thread_create(&fdset_tid,
-			"vhost-events", NULL, fdset_event_dispatch,
-			&vhost_user.fdset);
-		if (ret != 0) {
-			VHOST_LOG_CONFIG(ERR, "(%s) failed to create fdset handling thread", path);
-
-			fdset_pipe_uninit(&vhost_user.fdset);
-			return -1;
-		}
-	}
 
 	return vsocket->trans_ops->socket_start(vsocket);
 }

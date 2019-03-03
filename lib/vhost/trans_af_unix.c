@@ -11,10 +11,18 @@
 
 #include <rte_log.h>
 
+#include "fd_man.h"
 #include "vhost.h"
 #include "vhost_user.h"
 
 #define MAX_VIRTIO_BACKLOG 128
+
+static struct fdset af_unix_fdset = {
+	.fd = { [0 ... MAX_FDS - 1] = {-1, NULL, NULL, NULL, 0} },
+	.fd_mutex = PTHREAD_MUTEX_INITIALIZER,
+	.fd_pooling_mutex = PTHREAD_MUTEX_INITIALIZER,
+	.num = 0
+};
 
 TAILQ_HEAD(vhost_user_connection_list, vhost_user_connection);
 
@@ -205,7 +213,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	conn->connfd = fd;
 	conn->vsocket = vsocket;
 	conn->vid = vid;
-	ret = fdset_add(&vhost_user.fdset, fd, vhost_user_read_cb,
+	ret = fdset_add(&af_unix_fdset, fd, vhost_user_read_cb,
 			NULL, conn);
 	if (ret < 0) {
 		VHOST_LOG_CONFIG(ERR, "(%s) failed to add fd %d into vhost server fdset\n",
@@ -221,7 +229,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	TAILQ_INSERT_TAIL(&af_vsocket->conn_list, conn, next);
 	pthread_mutex_unlock(&af_vsocket->conn_mutex);
 
-	fdset_pipe_notify(&vhost_user.fdset);
+	fdset_pipe_notify(&af_unix_fdset);
 	return;
 
 err_cleanup:
@@ -345,7 +353,7 @@ vhost_user_start_server(struct vhost_user_socket *vsocket)
 	if (ret < 0)
 		goto err;
 
-	ret = fdset_add(&vhost_user.fdset, fd, vhost_user_server_new_connection,
+	ret = fdset_add(&af_unix_fdset, fd, vhost_user_server_new_connection,
 		  NULL, vsocket);
 	if (ret < 0) {
 		VHOST_LOG_CONFIG(ERR,
@@ -562,23 +570,21 @@ af_unix_socket_init(struct vhost_user_socket *vsocket,
 	return create_unix_socket(vsocket);
 }
 
-static void
+static int
 af_unix_socket_cleanup(struct vhost_user_socket *vsocket)
 {
 	struct af_unix_socket *af_vsocket =
 		container_of(vsocket, struct af_unix_socket, socket);
 	struct vhost_user_connection *conn, *next;
 
-again:
 	if (vsocket->is_server) {
 		/*
 		 * If r/wcb is executing, release vhost_user's
 		 * mutex lock, and try again since the r/wcb
 		 * may use the mutex lock.
 		 */
-		if (fdset_try_del(&vhost_user.fdset, af_vsocket->socket_fd) == -1) {
-			pthread_mutex_unlock(&vhost_user.mutex);
-			goto again;
+		if (fdset_try_del(&af_unix_fdset, af_vsocket->socket_fd) == -1) {
+			return -1;
 		}
 	} else if (vsocket->reconnect) {
 		vhost_user_remove_reconnect(vsocket);
@@ -596,11 +602,10 @@ again:
 		 * try again since the r/wcb may use the
 		 * conn_mutex and mutex locks.
 		 */
-		if (fdset_try_del(&vhost_user.fdset,
+		if (fdset_try_del(&af_unix_fdset,
 					conn->connfd) == -1) {
 			pthread_mutex_unlock(&af_vsocket->conn_mutex);
-			pthread_mutex_unlock(&vhost_user.mutex);
-			goto again;
+			return -1;
 		}
 
 		VHOST_LOG_CONFIG(INFO, "(%s) free connfd %d\n", vsocket->path, conn->connfd);
@@ -617,11 +622,36 @@ again:
 	}
 
 	pthread_mutex_destroy(&af_vsocket->conn_mutex);
+	return 0;
 }
 
 static int
 af_unix_socket_start(struct vhost_user_socket *vsocket)
 {
+	static pthread_t fdset_tid;
+
+	if (fdset_tid == 0) {
+		/**
+		 * create a pipe which will be waited by poll and notified to
+		 * rebuild the wait list of poll.
+		 */
+		if (fdset_pipe_init(&af_unix_fdset) < 0) {
+			VHOST_LOG_CONFIG(ERR,
+				"(%s) failed to create pipe for vhost fdset\n", vsocket->path);
+			return -1;
+		}
+
+		int ret = rte_ctrl_thread_create(&fdset_tid,
+			"vhost-events", NULL, fdset_event_dispatch,
+			&af_unix_fdset);
+		if (ret != 0) {
+			VHOST_LOG_CONFIG(ERR,
+				"(%s) failed to create fdset handling thread", vsocket->path);
+
+			fdset_pipe_uninit(&af_unix_fdset);
+			return -1;
+		}
+	}
 	if (vsocket->is_server)
 		return vhost_user_start_server(vsocket);
 	else
