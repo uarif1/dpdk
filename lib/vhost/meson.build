@@ -20,7 +20,7 @@ cflags += '-fno-strict-aliasing'
 sources = files(
         'fd_man.c',
         'iotlb.c',
-        'socket.c',
+        'rte_vhost.c',
         'vdpa.c',
         'vhost.c',
         'vhost_crypto.c',
