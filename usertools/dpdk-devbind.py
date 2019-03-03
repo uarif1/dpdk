@@ -36,6 +36,8 @@ cavium_zip = {'Class': '12', 'Vendor': '177d', 'Device': 'a037',
               'SVendor': None, 'SDevice': None}
 avp_vnic = {'Class': '05', 'Vendor': '1af4', 'Device': '1110',
             'SVendor': None, 'SDevice': None}
+virtio_vhost_user = {'Class': '00', 'Vendor': '1af4', 'Device': '106b',
+                     'SVendor': None, 'SDevice': None}
 
 cnxk_bphy = {'Class': '08', 'Vendor': '177d', 'Device': 'a089',
              'SVendor': None, 'SDevice': None}
@@ -83,6 +85,7 @@ compress_devices = [cavium_zip]
 regex_devices = [cn9k_ree]
 misc_devices = [cnxk_bphy, cnxk_bphy_cgx, cnxk_inl_dev,
                 intel_ntb_skx, intel_ntb_icx]
+other_devices = [virtio_vhost_user]
 
 # global dict ethernet devices present. Dictionary indexed by PCI address.
 # Each device within this is itself a dictionary of device properties
@@ -614,6 +617,9 @@ def show_status():
     if status_dev in ["regex", "all"]:
         show_device_status(regex_devices, "Regex")
 
+    if status_dev in ["other", "all"]:
+        show_device_status(other_devices, "Other")
+
 
 def pci_glob(arg):
     '''Returns a list containing either:
@@ -778,6 +784,7 @@ def main():
     get_device_details(compress_devices)
     get_device_details(regex_devices)
     get_device_details(misc_devices)
+    get_device_details(other_devices)
     do_arg_actions()
 
 
