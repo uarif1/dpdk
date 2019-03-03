@@ -168,12 +168,9 @@ struct __rte_packed vhu_msg_context {
 
 
 /* vhost_user.c */
-int vhost_user_msg_handler(int vid, int fd);
+int vhost_user_msg_handler(int vid, int fd, const struct vhu_msg_context *ctx_);
 int vhost_user_iotlb_miss(struct virtio_net *dev, uint64_t iova, uint8_t perm);
-
-/* socket.c */
-int read_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int max_fds,
-		int *fd_num);
-int send_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int fd_num);
-
+void close_msg_fds(struct vhu_msg_context *ctx);
+int read_vhost_message(struct virtio_net *dev, int sockfd,
+	struct vhu_msg_context *ctx);
 #endif

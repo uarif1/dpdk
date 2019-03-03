@@ -51,7 +51,7 @@ static void vhost_user_read_cb(int connfd, void *dat, int *remove);
  * return bytes# of read on success or negative val on failure. Update fdnum
  * with number of fds read.
  */
-int
+static int
 read_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int max_fds,
 		int *fd_num)
 {
@@ -103,9 +103,8 @@ read_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int m
 
 	return ret;
 }
-
-int
-send_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int fd_num)
+static int
+send_fd_message(char *ifname, int sockfd, void *buf, int buflen, int *fds, int fd_num)
 {
 
 	struct iovec iov;
@@ -151,6 +150,23 @@ send_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int f
 	}
 
 	return ret;
+}
+
+static int
+af_unix_send_reply(struct virtio_net *dev, struct vhu_msg_context *ctx)
+{
+	struct vhost_user_connection *conn =
+		container_of(dev, struct vhost_user_connection, device);
+
+	return send_fd_message(dev->ifname, conn->connfd, &ctx->msg,
+			       VHOST_USER_HDR_SIZE + ctx->msg.size, ctx->fds, ctx->fd_num);
+}
+
+static int
+af_unix_send_slave_req(struct virtio_net *dev, struct vhu_msg_context *ctx)
+{
+	return send_fd_message(dev->ifname, dev->slave_req_fd, &ctx->msg,
+			       VHOST_USER_HDR_SIZE + ctx->msg.size, ctx->fds, ctx->fd_num);
 }
 
 static void
@@ -246,6 +262,40 @@ vhost_user_server_new_connection(int fd, void *dat, int *remove __rte_unused)
 	vhost_user_add_connection(fd, vsocket);
 }
 
+/* return bytes# of read on success or negative val on failure. */
+int
+read_vhost_message(struct virtio_net *dev, int sockfd, struct vhu_msg_context *ctx)
+{
+	int ret;
+
+	ret = read_fd_message(dev->ifname, sockfd, (char *)&ctx->msg,
+		VHOST_USER_HDR_SIZE, ctx->fds, VHOST_MEMORY_MAX_NREGIONS, &ctx->fd_num);
+	if (ret <= 0) {
+		return ret;
+	} else if (ret != VHOST_USER_HDR_SIZE) {
+		VHOST_LOG_CONFIG(ERR, "(%s) Unexpected header size read\n", dev->ifname);
+		close_msg_fds(ctx);
+		return -1;
+	}
+
+	if (ctx->msg.size) {
+		if (ctx->msg.size > sizeof(ctx->msg.payload)) {
+			VHOST_LOG_CONFIG(ERR, "(%s) invalid msg size: %d\n",
+					dev->ifname, ctx->msg.size);
+			return -1;
+		}
+		ret = read(sockfd, &ctx->msg.payload, ctx->msg.size);
+		if (ret <= 0)
+			return ret;
+		if (ret != (int)ctx->msg.size) {
+			VHOST_LOG_CONFIG(ERR, "(%s) read control message failed\n", dev->ifname);
+			return -1;
+		}
+	}
+
+	return ret;
+}
+
 static void
 vhost_user_read_cb(int connfd, void *dat, int *remove)
 {
@@ -253,10 +303,23 @@ vhost_user_read_cb(int connfd, void *dat, int *remove)
 	struct vhost_user_socket *vsocket = conn->vsocket;
 	struct af_unix_socket *af_vsocket =
 		container_of(vsocket, struct af_unix_socket, socket);
+	struct vhu_msg_context ctx;
 	int ret;
 
-	ret = vhost_user_msg_handler(conn->device.vid, connfd);
+	ret = read_vhost_message(&conn->device, connfd, &ctx);
+	if (ret <= 0) {
+		if (ret < 0)
+			VHOST_LOG_CONFIG(ERR,
+				"vhost read message failed\n");
+		else
+			VHOST_LOG_CONFIG(INFO,
+				"vhost peer closed\n");
+		goto err;
+	}
+
+	ret = vhost_user_msg_handler(conn->device.vid, connfd, &ctx);
 	if (ret < 0) {
+err:
 		close(connfd);
 		*remove = 1;
 
@@ -649,4 +712,6 @@ const struct vhost_transport_ops af_unix_trans_ops = {
 	.socket_init = af_unix_socket_init,
 	.socket_cleanup = af_unix_socket_cleanup,
 	.vring_call = af_unix_vring_call,
+	.send_reply = af_unix_send_reply,
+	.send_slave_req = af_unix_send_slave_req,
 };
