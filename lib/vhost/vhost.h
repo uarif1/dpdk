@@ -13,7 +13,6 @@
 #include <linux/vhost.h>
 #include <linux/virtio_net.h>
 #include <sys/socket.h>
-#include <sys/un.h> /* TODO remove when trans_af_unix.c refactoring is done */
 #include <linux/if.h>
 #include <pthread.h>
 
@@ -440,6 +439,7 @@ struct inflight_mem_info {
 
 struct virtio_net;
 struct vhost_user_socket;
+
 /**
  * A structure containing function pointers for transport-specific operations.
  */
@@ -459,6 +459,29 @@ struct vhost_transport_ops {
 	 *  0 on success, -1 on failure
 	 */
 	int (*socket_start)(struct vhost_user_socket *vsocket);
+	/**
+	 * Initialize a vhost-user socket that is being created by
+	 * rte_vhost_driver_register().  This function checks that the flags
+	 * are valid but does not establish a vhost-user connection.
+	 *
+	 * @param vsocket
+	 *  new socket
+	 * @param flags
+	 *  argument passed on from rte_vhost_driver_register()
+	 * @return
+	 *  0 on success, -1 on failure
+	 */
+	int (*socket_init)(struct vhost_user_socket *vsocket, uint64_t flags);
+
+	/**
+	 * Free resources associated with a socket, including any established
+	 * connections.  This function calls vhost_destroy_device() to destroy
+	 * established connections for this socket.
+	 *
+	 * @param vsocket
+	 *  vhost socket
+	 */
+	void (*socket_cleanup)(struct vhost_user_socket *vsocket);
 
 	/**
 	 * Notify the guest that used descriptors have been added to the vring.
@@ -529,12 +552,10 @@ struct virtio_net {
 	struct rte_vhost_user_extern_ops extern_ops;
 } __rte_cache_aligned;
 
-/* The vhost_user, vhost_user_socket, vhost_user_connection, and reconnect
- * declarations are temporary measures for moving AF_UNIX code into
- * trans_af_unix.c.  They will be cleaned up as socket.c is untangled from
- * trans_af_unix.c.
+/* The vhost_user, vhost_user_socket, and reconnect declarations are temporary
+ * measures for moving AF_UNIX code into trans_af_unix.c.  They will be cleaned
+ * up as socket.c is untangled from trans_af_unix.c.
  */
-TAILQ_HEAD(vhost_user_connection_list, vhost_user_connection);
 /*
  * Every time rte_vhost_driver_register() is invoked, an associated
  * vhost_user_socket struct will be created.
@@ -545,11 +566,7 @@ TAILQ_HEAD(vhost_user_connection_list, vhost_user_connection);
  * struct.
  */
 struct vhost_user_socket {
-	struct vhost_user_connection_list conn_list;
-	pthread_mutex_t conn_mutex;
 	char *path;
-	int socket_fd;
-	struct sockaddr_un un;
 	bool is_server;
 	bool reconnect;
 	bool iommu_support;
@@ -577,14 +594,6 @@ struct vhost_user_socket {
 	struct vhost_transport_ops const *trans_ops;
 };
 
-struct vhost_user_connection {
-	struct vhost_user_socket *vsocket;
-	int connfd;
-	int vid;
-
-	TAILQ_ENTRY(vhost_user_connection) next;
-};
-
 #define MAX_VHOST_SOCKET 1024
 struct vhost_user {
 	struct vhost_user_socket *vsockets[MAX_VHOST_SOCKET];
@@ -594,8 +603,6 @@ struct vhost_user {
 };
 
 extern struct vhost_user vhost_user;
-
-int create_unix_socket(struct vhost_user_socket *vsocket);
 
 extern pthread_t reconn_tid;
 

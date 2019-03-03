@@ -5,6 +5,8 @@
  * Copyright(c) 2022 Bytedance Inc.
  */
 
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 
 #include <rte_log.h>
@@ -14,12 +16,27 @@
 
 #define MAX_VIRTIO_BACKLOG 128
 
+TAILQ_HEAD(vhost_user_connection_list, vhost_user_connection);
+
+struct vhost_user_connection {
+	struct vhost_user_socket *vsocket;
+	int connfd;
+	int vid;
+
+	TAILQ_ENTRY(vhost_user_connection) next;
+};
+
 struct af_unix_socket {
 	struct vhost_user_socket socket; /* must be the first field! */
+	struct vhost_user_connection_list conn_list;
+	pthread_mutex_t conn_mutex;
+	int socket_fd;
+	struct sockaddr_un un;
 };
 
 static int vhost_user_start_server(struct vhost_user_socket *vsocket);
 static int vhost_user_start_client(struct vhost_user_socket *vsocket);
+static int create_unix_socket(struct vhost_user_socket *vsocket);
 static void vhost_user_read_cb(int connfd, void *dat, int *remove);
 
 /*
@@ -131,6 +148,8 @@ send_fd_message(char *ifname, int sockfd, char *buf, int buflen, int *fds, int f
 static void
 vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 {
+	struct af_unix_socket *af_vsocket =
+		container_of(vsocket, struct af_unix_socket, socket);
 	int vid;
 	size_t size;
 	struct vhost_user_connection *conn;
@@ -198,9 +217,9 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 		goto err_cleanup;
 	}
 
-	pthread_mutex_lock(&vsocket->conn_mutex);
-	TAILQ_INSERT_TAIL(&vsocket->conn_list, conn, next);
-	pthread_mutex_unlock(&vsocket->conn_mutex);
+	pthread_mutex_lock(&af_vsocket->conn_mutex);
+	TAILQ_INSERT_TAIL(&af_vsocket->conn_list, conn, next);
+	pthread_mutex_unlock(&af_vsocket->conn_mutex);
 
 	fdset_pipe_notify(&vhost_user.fdset);
 	return;
@@ -232,6 +251,8 @@ vhost_user_read_cb(int connfd, void *dat, int *remove)
 {
 	struct vhost_user_connection *conn = dat;
 	struct vhost_user_socket *vsocket = conn->vsocket;
+	struct af_unix_socket *af_vsocket =
+		container_of(vsocket, struct af_unix_socket, socket);
 	int ret;
 
 	ret = vhost_user_msg_handler(conn->vid, connfd);
@@ -254,19 +275,21 @@ vhost_user_read_cb(int connfd, void *dat, int *remove)
 			vhost_user_start_client(vsocket);
 		}
 
-		pthread_mutex_lock(&vsocket->conn_mutex);
-		TAILQ_REMOVE(&vsocket->conn_list, conn, next);
-		pthread_mutex_unlock(&vsocket->conn_mutex);
+		pthread_mutex_lock(&af_vsocket->conn_mutex);
+		TAILQ_REMOVE(&af_vsocket->conn_list, conn, next);
+		pthread_mutex_unlock(&af_vsocket->conn_mutex);
 
 		free(conn);
 	}
 }
 
-int
+static int
 create_unix_socket(struct vhost_user_socket *vsocket)
 {
+	struct af_unix_socket *af_vsocket =
+		container_of(vsocket, struct af_unix_socket, socket);
 	int fd;
-	struct sockaddr_un *un = &vsocket->un;
+	struct sockaddr_un *un = &af_vsocket->un;
 
 	fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (fd < 0)
@@ -287,15 +310,17 @@ create_unix_socket(struct vhost_user_socket *vsocket)
 	strncpy(un->sun_path, vsocket->path, sizeof(un->sun_path));
 	un->sun_path[sizeof(un->sun_path) - 1] = '\0';
 
-	vsocket->socket_fd = fd;
+	af_vsocket->socket_fd = fd;
 	return 0;
 }
 
 static int
 vhost_user_start_server(struct vhost_user_socket *vsocket)
 {
+	struct af_unix_socket *af_vsocket =
+		container_of(vsocket, struct af_unix_socket, socket);
 	int ret;
-	int fd = vsocket->socket_fd;
+	int fd = af_vsocket->socket_fd;
 	const char *path = vsocket->path;
 
 	/*
@@ -308,7 +333,7 @@ vhost_user_start_server(struct vhost_user_socket *vsocket)
 	 * The user must ensure that the socket does not exist before
 	 * registering the vhost driver in server mode.
 	 */
-	ret = bind(fd, (struct sockaddr *)&vsocket->un, sizeof(vsocket->un));
+	ret = bind(fd, (struct sockaddr *)&af_vsocket->un, sizeof(af_vsocket->un));
 	if (ret < 0) {
 		VHOST_LOG_CONFIG(ERR, "(%s) failed to bind: %s; remove it and try again\n",
 			path, strerror(errno));
@@ -444,13 +469,15 @@ vhost_user_reconnect_init(void)
 static int
 vhost_user_start_client(struct vhost_user_socket *vsocket)
 {
+	struct af_unix_socket *af_vsocket =
+		container_of(vsocket, struct af_unix_socket, socket);
 	int ret;
-	int fd = vsocket->socket_fd;
+	int fd = af_vsocket->socket_fd;
 	const char *path = vsocket->path;
 	struct vhost_user_reconnect *reconn;
 
-	ret = vhost_user_connect_nonblock(vsocket->path, fd, (struct sockaddr *)&vsocket->un,
-					  sizeof(vsocket->un));
+	ret = vhost_user_connect_nonblock(vsocket->path, fd, (struct sockaddr *)&af_vsocket->un,
+					  sizeof(af_vsocket->un));
 	if (ret == 0) {
 		vhost_user_add_connection(fd, vsocket);
 		return 0;
@@ -470,7 +497,7 @@ vhost_user_start_client(struct vhost_user_socket *vsocket)
 		close(fd);
 		return -1;
 	}
-	reconn->un = vsocket->un;
+	reconn->un = af_vsocket->un;
 	reconn->fd = fd;
 	reconn->vsocket = vsocket;
 	pthread_mutex_lock(&reconn_list.mutex);
@@ -504,7 +531,6 @@ vhost_user_remove_reconnect(struct vhost_user_socket *vsocket)
 	return found;
 }
 
-
 static int
 af_unix_vring_call(struct virtio_net *dev __rte_unused,
 		   struct vhost_virtqueue *vq)
@@ -512,6 +538,80 @@ af_unix_vring_call(struct virtio_net *dev __rte_unused,
 	if (vq->callfd >= 0)
 		eventfd_write(vq->callfd, (eventfd_t)1);
 	return 0;
+}
+static int
+af_unix_socket_init(struct vhost_user_socket *vsocket,
+		    uint64_t flags __rte_unused)
+{
+	struct af_unix_socket *af_vsocket =
+		container_of(vsocket, struct af_unix_socket, socket);
+	int ret;
+
+	TAILQ_INIT(&af_vsocket->conn_list);
+	ret = pthread_mutex_init(&af_vsocket->conn_mutex, NULL);
+	if (ret) {
+		VHOST_LOG_CONFIG(ERR, "(%s) failed to init connection mutex\n", vsocket->path);
+		return -1;
+	}
+
+	return create_unix_socket(vsocket);
+}
+
+static void
+af_unix_socket_cleanup(struct vhost_user_socket *vsocket)
+{
+	struct af_unix_socket *af_vsocket =
+		container_of(vsocket, struct af_unix_socket, socket);
+	struct vhost_user_connection *conn, *next;
+
+again:
+	if (vsocket->is_server) {
+		/*
+		 * If r/wcb is executing, release vhost_user's
+		 * mutex lock, and try again since the r/wcb
+		 * may use the mutex lock.
+		 */
+		if (fdset_try_del(&vhost_user.fdset, af_vsocket->socket_fd) == -1) {
+			pthread_mutex_unlock(&vhost_user.mutex);
+			goto again;
+		}
+	} else if (vsocket->reconnect) {
+		vhost_user_remove_reconnect(vsocket);
+	}
+
+	pthread_mutex_lock(&af_vsocket->conn_mutex);
+	for (conn = TAILQ_FIRST(&af_vsocket->conn_list);
+			conn != NULL;
+			conn = next) {
+		next = TAILQ_NEXT(conn, next);
+
+		/*
+		 * If r/wcb is executing, release vsocket's
+		 * conn_mutex and vhost_user's mutex locks, and
+		 * try again since the r/wcb may use the
+		 * conn_mutex and mutex locks.
+		 */
+		if (fdset_try_del(&vhost_user.fdset,
+					conn->connfd) == -1) {
+			pthread_mutex_unlock(&af_vsocket->conn_mutex);
+			pthread_mutex_unlock(&vhost_user.mutex);
+			goto again;
+		}
+
+		VHOST_LOG_CONFIG(INFO, "(%s) free connfd %d\n", vsocket->path, conn->connfd);
+		close(conn->connfd);
+		vhost_destroy_device(conn->vid);
+		TAILQ_REMOVE(&af_vsocket->conn_list, conn, next);
+		free(conn);
+	}
+	pthread_mutex_unlock(&af_vsocket->conn_mutex);
+
+	if (vsocket->is_server) {
+		close(af_vsocket->socket_fd);
+		unlink(vsocket->path);
+	}
+
+	pthread_mutex_destroy(&af_vsocket->conn_mutex);
 }
 
 static int
@@ -526,5 +626,7 @@ af_unix_socket_start(struct vhost_user_socket *vsocket)
 const struct vhost_transport_ops af_unix_trans_ops = {
 	.socket_size = sizeof(struct af_unix_socket),
 	.socket_start = af_unix_socket_start,
+	.socket_init = af_unix_socket_init,
+	.socket_cleanup = af_unix_socket_cleanup,
 	.vring_call = af_unix_vring_call,
 };
