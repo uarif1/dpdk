@@ -26,6 +26,7 @@ sources = files(
         'vhost_crypto.c',
         'vhost_user.c',
         'virtio_net.c',
+        'trans_af_unix.c'
 )
 headers = files(
         'rte_vdpa.h',
