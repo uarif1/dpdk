@@ -6,10 +6,19 @@
  */
 
 #include <sys/socket.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#ifdef RTE_LIBRTE_VHOST_POSTCOPY
+#include <linux/userfaultfd.h>
+#endif
 #include <fcntl.h>
 
+#include <rte_errno.h>
 #include <rte_log.h>
+#include <rte_vfio.h>
 
 #include "fd_man.h"
 #include "vhost.h"
@@ -48,6 +57,7 @@ static int vhost_user_start_server(struct vhost_user_socket *vsocket);
 static int vhost_user_start_client(struct vhost_user_socket *vsocket);
 static int create_unix_socket(struct vhost_user_socket *vsocket);
 static void vhost_user_read_cb(int connfd, void *dat, int *remove);
+static int read_vhost_message(struct virtio_net *dev, int sockfd, struct vhu_msg_context *ctx);
 
 /*
  * return bytes# of read on success or negative val on failure. Update fdnum
@@ -339,7 +349,7 @@ vhost_user_server_new_connection(int fd, void *dat, int *remove __rte_unused)
 }
 
 /* return bytes# of read on success or negative val on failure. */
-int
+static int
 read_vhost_message(struct virtio_net *dev, int sockfd, struct vhu_msg_context *ctx)
 {
 	int ret;
@@ -671,6 +681,306 @@ af_unix_vring_call(struct virtio_net *dev __rte_unused,
 		eventfd_write(vq->callfd, (eventfd_t)1);
 	return 0;
 }
+
+static uint64_t
+get_blk_size(int fd)
+{
+	struct stat stat;
+	int ret;
+
+	ret = fstat(fd, &stat);
+	return ret == -1 ? (uint64_t)-1 : (uint64_t)stat.st_blksize;
+}
+
+static void
+async_dma_map(struct virtio_net *dev, bool do_map)
+{
+	int ret = 0;
+	uint32_t i;
+	struct guest_page *page;
+
+	if (do_map) {
+		for (i = 0; i < dev->nr_guest_pages; i++) {
+			page = &dev->guest_pages[i];
+			ret = rte_vfio_container_dma_map(RTE_VFIO_DEFAULT_CONTAINER_FD,
+							 page->host_user_addr,
+							 page->host_iova,
+							 page->size);
+			if (ret) {
+				/*
+				 * DMA device may bind with kernel driver, in this case,
+				 * we don't need to program IOMMU manually. However, if no
+				 * device is bound with vfio/uio in DPDK, and vfio kernel
+				 * module is loaded, the API will still be called and return
+				 * with ENODEV.
+				 *
+				 * DPDK vfio only returns ENODEV in very similar situations
+				 * (vfio either unsupported, or supported but no devices found).
+				 * Either way, no mappings could be performed. We treat it as
+				 * normal case in async path. This is a workaround.
+				 */
+				if (rte_errno == ENODEV)
+					return;
+
+				/* DMA mapping errors won't stop VHOST_USER_SET_MEM_TABLE. */
+				VHOST_LOG_CONFIG(ERR, "DMA engine map failed\n");
+			}
+		}
+
+	} else {
+		for (i = 0; i < dev->nr_guest_pages; i++) {
+			page = &dev->guest_pages[i];
+			ret = rte_vfio_container_dma_unmap(RTE_VFIO_DEFAULT_CONTAINER_FD,
+							   page->host_user_addr,
+							   page->host_iova,
+							   page->size);
+			if (ret) {
+				/* like DMA map, ignore the kernel driver case when unmap. */
+				if (rte_errno == EINVAL)
+					return;
+
+				VHOST_LOG_CONFIG(ERR, "DMA engine unmap failed\n");
+			}
+		}
+	}
+}
+
+static int
+vhost_user_mmap_region(struct virtio_net *dev,
+		struct rte_vhost_mem_region *region,
+		uint64_t mmap_offset)
+{
+	void *mmap_addr;
+	uint64_t mmap_size;
+	uint64_t alignment;
+	int populate;
+
+	/* Check for memory_size + mmap_offset overflow */
+	if (mmap_offset >= -region->size) {
+		VHOST_LOG_CONFIG(ERR, "(%s) mmap_offset (%#"PRIx64") and memory_size (%#"PRIx64") overflow\n",
+				dev->ifname, mmap_offset, region->size);
+		return -1;
+	}
+
+	mmap_size = region->size + mmap_offset;
+
+	/* mmap() without flag of MAP_ANONYMOUS, should be called with length
+	 * argument aligned with hugepagesz at older longterm version Linux,
+	 * like 2.6.32 and 3.2.72, or mmap() will fail with EINVAL.
+	 *
+	 * To avoid failure, make sure in caller to keep length aligned.
+	 */
+	alignment = get_blk_size(region->fd);
+	if (alignment == (uint64_t)-1) {
+		VHOST_LOG_CONFIG(ERR, "(%s) couldn't get hugepage size through fstat\n",
+				dev->ifname);
+		return -1;
+	}
+	mmap_size = RTE_ALIGN_CEIL(mmap_size, alignment);
+	if (mmap_size == 0) {
+		/*
+		 * It could happen if initial mmap_size + alignment overflows
+		 * the sizeof uint64, which could happen if either mmap_size or
+		 * alignment value is wrong.
+		 *
+		 * mmap() kernel implementation would return an error, but
+		 * better catch it before and provide useful info in the logs.
+		 */
+		VHOST_LOG_CONFIG(ERR, "(%s) mmap size (0x%" PRIx64 ") or alignment (0x%" PRIx64 ") is invalid\n",
+				dev->ifname, region->size + mmap_offset, alignment);
+		return -1;
+	}
+
+	populate = dev->async_copy ? MAP_POPULATE : 0;
+	mmap_addr = mmap(NULL, mmap_size, PROT_READ | PROT_WRITE,
+			MAP_SHARED | populate, region->fd, 0);
+
+	if (mmap_addr == MAP_FAILED) {
+		VHOST_LOG_CONFIG(ERR, "(%s) mmap failed (%s).\n", dev->ifname, strerror(errno));
+		return -1;
+	}
+
+	region->mmap_addr = mmap_addr;
+	region->mmap_size = mmap_size;
+	region->host_user_addr = (uint64_t)(uintptr_t)mmap_addr + mmap_offset;
+
+	if (dev->async_copy) {
+		if (add_guest_pages(dev, region, alignment) < 0) {
+			VHOST_LOG_CONFIG(ERR, "(%s) adding guest pages to region failed.\n",
+					dev->ifname);
+			return -1;
+		}
+	}
+
+	VHOST_LOG_CONFIG(INFO, "(%s) guest memory region size: 0x%" PRIx64 "\n",
+			dev->ifname, region->size);
+	VHOST_LOG_CONFIG(INFO, "(%s)\t guest physical addr: 0x%" PRIx64 "\n",
+			dev->ifname, region->guest_phys_addr);
+	VHOST_LOG_CONFIG(INFO, "(%s)\t guest virtual  addr: 0x%" PRIx64 "\n",
+			dev->ifname, region->guest_user_addr);
+	VHOST_LOG_CONFIG(INFO, "(%s)\t host  virtual  addr: 0x%" PRIx64 "\n",
+			dev->ifname, region->host_user_addr);
+	VHOST_LOG_CONFIG(INFO, "(%s)\t mmap addr : 0x%" PRIx64 "\n",
+			dev->ifname, (uint64_t)(uintptr_t)mmap_addr);
+	VHOST_LOG_CONFIG(INFO, "(%s)\t mmap size : 0x%" PRIx64 "\n",
+			dev->ifname, mmap_size);
+	VHOST_LOG_CONFIG(INFO, "(%s)\t mmap align: 0x%" PRIx64 "\n",
+			dev->ifname, alignment);
+	VHOST_LOG_CONFIG(INFO, "(%s)\t mmap off  : 0x%" PRIx64 "\n",
+			dev->ifname, mmap_offset);
+
+	return 0;
+}
+
+#ifdef RTE_LIBRTE_VHOST_POSTCOPY
+static int
+vhost_user_postcopy_region_register(struct virtio_net *dev,
+		struct rte_vhost_mem_region *reg)
+{
+	struct uffdio_register reg_struct;
+
+	/*
+	 * Let's register all the mmapped area to ensure
+	 * alignment on page boundary.
+	 */
+	reg_struct.range.start = (uint64_t)(uintptr_t)reg->mmap_addr;
+	reg_struct.range.len = reg->mmap_size;
+	reg_struct.mode = UFFDIO_REGISTER_MODE_MISSING;
+
+	if (ioctl(dev->postcopy_ufd, UFFDIO_REGISTER,
+				&reg_struct)) {
+		VHOST_LOG_CONFIG(ERR, "(%s) failed to register ufd for region "
+				"%" PRIx64 " - %" PRIx64 " (ufd = %d) %s\n",
+				dev->ifname,
+				(uint64_t)reg_struct.range.start,
+				(uint64_t)reg_struct.range.start +
+				(uint64_t)reg_struct.range.len - 1,
+				dev->postcopy_ufd,
+				strerror(errno));
+		return -1;
+	}
+
+	VHOST_LOG_CONFIG(INFO,
+			"(%s)\t userfaultfd registered for range : %" PRIx64 " - %" PRIx64 "\n",
+			dev->ifname,
+			(uint64_t)reg_struct.range.start,
+			(uint64_t)reg_struct.range.start +
+			(uint64_t)reg_struct.range.len - 1);
+
+	return 0;
+}
+#else
+static int
+vhost_user_postcopy_region_register(struct virtio_net *dev __rte_unused,
+		struct rte_vhost_mem_region *reg __rte_unused)
+{
+	return -1;
+}
+#endif
+
+static int
+vhost_user_postcopy_register(struct virtio_net *dev, int main_fd,
+		struct vhu_msg_context *ctx)
+{
+	struct VhostUserMemory *memory;
+	struct rte_vhost_mem_region *reg;
+	struct vhu_msg_context ack_ctx;
+	uint32_t i;
+
+	if (!dev->postcopy_listening)
+		return 0;
+
+	/*
+	 * We haven't a better way right now than sharing
+	 * DPDK's virtual address with Qemu, so that Qemu can
+	 * retrieve the region offset when handling userfaults.
+	 */
+	memory = &ctx->msg.payload.memory;
+	for (i = 0; i < memory->nregions; i++) {
+		reg = &dev->mem->regions[i];
+		memory->regions[i].userspace_addr = reg->host_user_addr;
+	}
+
+	/* Send the addresses back to qemu */
+	ctx->fd_num = 0;
+	/* Send reply */
+	ctx->msg.flags &= ~VHOST_USER_VERSION_MASK;
+	ctx->msg.flags &= ~VHOST_USER_NEED_REPLY;
+	ctx->msg.flags |= VHOST_USER_VERSION;
+	ctx->msg.flags |= VHOST_USER_REPLY_MASK;
+	af_unix_send_reply(dev, ctx);
+
+	/* Wait for qemu to acknowledge it got the addresses
+	 * we've got to wait before we're allowed to generate faults.
+	 */
+	if (read_vhost_message(dev, main_fd, &ack_ctx) <= 0) {
+		VHOST_LOG_CONFIG(ERR, "(%s) failed to read qemu ack on postcopy set-mem-table\n",
+				dev->ifname);
+		return -1;
+	}
+
+	if (validate_msg_fds(dev, &ack_ctx, 0) != 0)
+		return -1;
+
+	if (ack_ctx.msg.request.master != VHOST_USER_SET_MEM_TABLE) {
+		VHOST_LOG_CONFIG(ERR, "(%s) bad qemu ack on postcopy set-mem-table (%d)\n",
+				dev->ifname, ack_ctx.msg.request.master);
+		return -1;
+	}
+
+	/* Now userfault register and we can use the memory */
+	for (i = 0; i < memory->nregions; i++) {
+		reg = &dev->mem->regions[i];
+		if (vhost_user_postcopy_region_register(dev, reg) < 0)
+			return -1;
+	}
+
+	return 0;
+}
+
+static int
+af_unix_map_mem_regions(struct virtio_net *dev, struct vhu_msg_context *ctx, int main_fd)
+{
+	uint32_t i;
+
+	for (i = 0; i < dev->mem->nregions; i++) {
+		struct rte_vhost_mem_region *reg = &dev->mem->regions[i];
+		uint64_t mmap_size = reg->mmap_size;
+		uint64_t mmap_offset = mmap_size - reg->size;
+
+		if (vhost_user_mmap_region(dev, reg, mmap_offset) < 0) {
+			VHOST_LOG_CONFIG(ERR, "(%s) failed to mmap region %u\n", dev->ifname, i);
+			return -1;
+		}
+	}
+
+	if (dev->async_copy && rte_vfio_is_enabled("vfio"))
+		async_dma_map(dev, true);
+
+	if (vhost_user_postcopy_register(dev, main_fd, ctx) < 0)
+		return -1;
+
+	return 0;
+}
+
+static void
+af_unix_unmap_mem_regions(struct virtio_net *dev)
+{
+	uint32_t i;
+	struct rte_vhost_mem_region *reg;
+
+	if (dev->async_copy && rte_vfio_is_enabled("vfio"))
+		async_dma_map(dev, false);
+
+	for (i = 0; i < dev->mem->nregions; i++) {
+		reg = &dev->mem->regions[i];
+		if (reg->host_user_addr) {
+			munmap(reg->mmap_addr, reg->mmap_size);
+			close(reg->fd);
+		}
+	}
+}
+
 static int
 af_unix_socket_init(struct vhost_user_socket *vsocket,
 		    uint64_t flags __rte_unused)
@@ -805,4 +1115,6 @@ const struct vhost_transport_ops af_unix_trans_ops = {
 	.send_slave_req = af_unix_send_slave_req,
 	.process_slave_message_reply = af_unix_process_slave_message_reply,
 	.set_slave_req_fd = af_unix_set_slave_req_fd,
+	.map_mem_regions = af_unix_map_mem_regions,
+	.unmap_mem_regions = af_unix_unmap_mem_regions,
 };

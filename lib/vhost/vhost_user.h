@@ -169,8 +169,10 @@ struct __rte_packed vhu_msg_context {
 
 /* vhost_user.c */
 int vhost_user_msg_handler(int vid, int fd, const struct vhu_msg_context *ctx_);
+int add_guest_pages(struct virtio_net *dev,
+		   struct rte_vhost_mem_region *reg,
+		   uint64_t page_size);
+int validate_msg_fds(struct virtio_net *dev, struct vhu_msg_context *ctx, int expected_fds);
 int vhost_user_iotlb_miss(struct virtio_net *dev, uint64_t iova, uint8_t perm);
 void close_msg_fds(struct vhu_msg_context *ctx);
-int read_vhost_message(struct virtio_net *dev, int sockfd,
-	struct vhu_msg_context *ctx);
 #endif
