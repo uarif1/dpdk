@@ -439,13 +439,26 @@ struct inflight_mem_info {
 };
 
 struct virtio_net;
-
+struct vhost_user_socket;
 /**
  * A structure containing function pointers for transport-specific operations.
  */
 struct vhost_transport_ops {
 	/** Size of struct vhost_user_socket-derived per-socket state */
 	size_t socket_size;
+
+	/**
+	 * Start establishing vhost-user connections.  This function is
+	 * asynchronous and connections may be established after it has
+	 * returned.  Call vhost_user_add_connection() to register new
+	 * connections.
+	 *
+	 * @param vsocket
+	 *  vhost socket
+	 * @return
+	 *  0 on success, -1 on failure
+	 */
+	int (*socket_start)(struct vhost_user_socket *vsocket);
 
 	/**
 	 * Notify the guest that used descriptors have been added to the vring.
@@ -583,8 +596,6 @@ struct vhost_user {
 extern struct vhost_user vhost_user;
 
 int create_unix_socket(struct vhost_user_socket *vsocket);
-int vhost_user_start_server(struct vhost_user_socket *vsocket);
-int vhost_user_start_client(struct vhost_user_socket *vsocket);
 
 extern pthread_t reconn_tid;
 
