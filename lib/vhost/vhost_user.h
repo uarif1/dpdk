@@ -168,7 +168,7 @@ struct __rte_packed vhu_msg_context {
 
 
 /* vhost_user.c */
-int vhost_user_msg_handler(int vid, int fd, const struct vhu_msg_context *ctx_);
+int vhost_user_msg_handler(int vid, const struct vhu_msg_context *ctx_);
 int add_guest_pages(struct virtio_net *dev,
 		   struct rte_vhost_mem_region *reg,
 		   uint64_t page_size);
