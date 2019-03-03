@@ -552,9 +552,9 @@ struct virtio_net {
 	struct rte_vhost_user_extern_ops extern_ops;
 } __rte_cache_aligned;
 
-/* The vhost_user, vhost_user_socket, and reconnect declarations are temporary
- * measures for moving AF_UNIX code into trans_af_unix.c.  They will be cleaned
- * up as socket.c is untangled from trans_af_unix.c.
+/* The vhost_user and vhost_user_socket declarations are temporary measures for
+ * moving AF_UNIX code into trans_af_unix.c.  They will be cleaned up as
+ * socket.c is untangled from trans_af_unix.c.
  */
 /*
  * Every time rte_vhost_driver_register() is invoked, an associated
@@ -604,9 +604,6 @@ struct vhost_user {
 
 extern struct vhost_user vhost_user;
 
-extern pthread_t reconn_tid;
-
-int vhost_user_reconnect_init(void);
 bool vhost_user_remove_reconnect(struct vhost_user_socket *vsocket);
 
 static __rte_always_inline bool
