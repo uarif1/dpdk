@@ -939,9 +939,11 @@ vhost_user_postcopy_register(struct virtio_net *dev, int main_fd,
 }
 
 static int
-af_unix_map_mem_regions(struct virtio_net *dev, struct vhu_msg_context *ctx, int main_fd)
+af_unix_map_mem_regions(struct virtio_net *dev, struct vhu_msg_context *ctx)
 {
 	uint32_t i;
+	struct vhost_user_connection *conn =
+		container_of(dev, struct vhost_user_connection, device);
 
 	for (i = 0; i < dev->mem->nregions; i++) {
 		struct rte_vhost_mem_region *reg = &dev->mem->regions[i];
@@ -957,7 +959,7 @@ af_unix_map_mem_regions(struct virtio_net *dev, struct vhu_msg_context *ctx, int
 	if (dev->async_copy && rte_vfio_is_enabled("vfio"))
 		async_dma_map(dev, true);
 
-	if (vhost_user_postcopy_register(dev, main_fd, ctx) < 0)
+	if (vhost_user_postcopy_register(dev, conn->connfd, ctx) < 0)
 		return -1;
 
 	return 0;
@@ -1097,10 +1099,50 @@ af_unix_cleanup_device(struct virtio_net *dev, int destroy __rte_unused)
 	struct vhost_user_connection *conn =
 		container_of(dev, struct vhost_user_connection, device);
 
+	if (dev->log_addr) {
+		munmap((void *)(uintptr_t)dev->log_addr, dev->log_size);
+		dev->log_addr = 0;
+	}
+
 	if (conn->slave_req_fd >= 0) {
 		close(conn->slave_req_fd);
 		conn->slave_req_fd = -1;
 	}
+}
+
+static int
+af_unix_set_log_base(struct virtio_net *dev, const struct vhu_msg_context *ctx)
+{
+	int fd = ctx->fds[0];
+	uint64_t size, off;
+	void *addr;
+
+	size = ctx->msg.payload.log.mmap_size;
+	off  = ctx->msg.payload.log.mmap_offset;
+
+	/*
+	 * mmap from 0 to workaround a hugepage mmap bug: mmap will
+	 * fail when offset is not page size aligned.
+	 */
+	addr = mmap(0, size + off, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	close(fd);
+	if (addr == MAP_FAILED) {
+		VHOST_LOG_CONFIG(ERR, "mmap log base failed!\n");
+		return -1;
+	}
+
+	/*
+	 * Free previously mapped log memory on occasionally
+	 * multiple VHOST_USER_SET_LOG_BASE.
+	 */
+	if (dev->log_addr)
+		munmap((void *)(uintptr_t)dev->log_addr, dev->log_size);
+
+	dev->log_addr = (uint64_t)(uintptr_t)addr;
+	dev->log_base = dev->log_addr + off;
+	dev->log_size = size;
+
+	return 0;
 }
 
 const struct vhost_transport_ops af_unix_trans_ops = {
@@ -1117,4 +1159,5 @@ const struct vhost_transport_ops af_unix_trans_ops = {
 	.set_slave_req_fd = af_unix_set_slave_req_fd,
 	.map_mem_regions = af_unix_map_mem_regions,
 	.unmap_mem_regions = af_unix_unmap_mem_regions,
+	.set_log_base = af_unix_set_log_base,
 };

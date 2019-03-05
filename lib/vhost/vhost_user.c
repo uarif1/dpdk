@@ -155,11 +155,6 @@ vhost_backend_cleanup(struct virtio_net *dev)
 	rte_free(dev->guest_pages);
 	dev->guest_pages = NULL;
 
-	if (dev->log_addr) {
-		munmap((void *)(uintptr_t)dev->log_addr, dev->log_size);
-		dev->log_addr = 0;
-	}
-
 	if (dev->inflight_info) {
 		if (dev->inflight_info->addr) {
 			munmap(dev->inflight_info->addr,
@@ -1038,7 +1033,7 @@ vhost_memory_changed(struct VhostUserMemory *new,
 static int
 vhost_user_set_mem_table(struct virtio_net **pdev,
 			struct vhu_msg_context *ctx,
-			int main_fd)
+			int main_fd __rte_unused)
 {
 	struct virtio_net *dev = *pdev;
 	struct VhostUserMemory *memory = &ctx->msg.payload.memory;
@@ -1144,7 +1139,7 @@ vhost_user_set_mem_table(struct virtio_net **pdev,
 		ctx->fds[i] = -1;
 	}
 
-	if (dev->trans_ops->map_mem_regions(dev, ctx, main_fd)  < 0)
+	if (dev->trans_ops->map_mem_regions(dev, ctx)  < 0)
 		goto free_mem_table;
 
 	for (i = 0; i < dev->nr_vring; i++) {
@@ -2001,7 +1996,6 @@ vhost_user_set_log_base(struct virtio_net **pdev,
 	struct virtio_net *dev = *pdev;
 	int fd = ctx->fds[0];
 	uint64_t size, off;
-	void *addr;
 	uint32_t i;
 
 	if (validate_msg_fds(dev, ctx, 1) != 0)
@@ -2036,23 +2030,8 @@ vhost_user_set_log_base(struct virtio_net **pdev,
 	 * mmap from 0 to workaround a hugepage mmap bug: mmap will
 	 * fail when offset is not page size aligned.
 	 */
-	addr = mmap(0, size + off, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	close(fd);
-	if (addr == MAP_FAILED) {
-		VHOST_LOG_CONFIG(ERR, "(%s) mmap log base failed!\n", dev->ifname);
+	if (dev->trans_ops->set_log_base(dev, ctx) < 0)
 		return RTE_VHOST_MSG_RESULT_ERR;
-	}
-
-	/*
-	 * Free previously mapped log memory on occasionally
-	 * multiple VHOST_USER_SET_LOG_BASE.
-	 */
-	if (dev->log_addr) {
-		munmap((void *)(uintptr_t)dev->log_addr, dev->log_size);
-	}
-	dev->log_addr = (uint64_t)(uintptr_t)addr;
-	dev->log_base = dev->log_addr + off;
-	dev->log_size = size;
 
 	for (i = 0; i < dev->nr_vring; i++) {
 		struct vhost_virtqueue *vq = dev->virtqueue[i];

@@ -572,13 +572,11 @@ struct vhost_transport_ops {
 	 *  vhost device
 	 * @param ctx
 	 *  message context
-	 * @param mainfd
-	 *  mainfd
 	 * @return
 	 *  0 on success, -1 on failure
 	 */
 	int (*map_mem_regions)(struct virtio_net *dev,
-				struct vhu_msg_context *ctx, int mainfd);
+				struct vhu_msg_context *ctx);
 
 	/**
 	 * Unmap memory table regions in dev->mem->regions[] and free any
@@ -588,6 +586,19 @@ struct vhost_transport_ops {
 	 *  vhost device
 	 */
 	void (*unmap_mem_regions)(struct virtio_net *dev);
+
+	/**
+	 * Setup the log memory region.
+	 *
+	 * @param dev
+	 *  vhost device
+	 * @param ctx
+	 *  message context
+	 * @return
+	 *  0 on success, -1 on failure
+	 */
+	int (*set_log_base)(struct virtio_net *dev,
+			    const struct vhu_msg_context *ctx);
 };
 
 /** The traditional AF_UNIX vhost-user protocol transport. */
