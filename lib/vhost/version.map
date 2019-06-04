@@ -59,6 +59,7 @@ DPDK_22 {
 	rte_vhost_set_vring_base;
 	rte_vhost_va_from_guest_pa;
 	rte_vhost_vring_call;
+	rte_vhost_register_transport;
 
 	vhost_destroy_device;
 	vhost_config_log_level;
