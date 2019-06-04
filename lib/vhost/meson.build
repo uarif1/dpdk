@@ -29,6 +29,8 @@ sources = files(
         'trans_af_unix.c'
 )
 headers = files(
+        'vhost.h',
+        'vhost_user.h',
         'rte_vdpa.h',
         'rte_vhost.h',
         'rte_vhost_async.h',
