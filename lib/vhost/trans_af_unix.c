@@ -11,6 +11,7 @@
 #include <sys/un.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
 #ifdef RTE_LIBRTE_VHOST_POSTCOPY
 #include <linux/userfaultfd.h>
 #endif
@@ -41,6 +42,9 @@ struct vhost_user_connection {
 	int connfd;
 	int slave_req_fd;
 	rte_spinlock_t slave_req_lock;
+
+	int postcopy_ufd;
+	int postcopy_listening;
 
 	TAILQ_ENTRY(vhost_user_connection) next;
 };
@@ -275,6 +279,7 @@ vhost_user_add_connection(int fd, struct vhost_user_socket *vsocket)
 	conn->slave_req_fd = -1;
 	conn->vsocket = vsocket;
 	rte_spinlock_init(&conn->slave_req_lock);
+	conn->postcopy_ufd = -1;
 
 	size = strnlen(vsocket->path, PATH_MAX);
 	vhost_set_ifname(dev->vid, vsocket->path, size);
@@ -838,6 +843,8 @@ vhost_user_postcopy_region_register(struct virtio_net *dev,
 		struct rte_vhost_mem_region *reg)
 {
 	struct uffdio_register reg_struct;
+	struct vhost_user_connection *conn =
+		container_of(dev, struct vhost_user_connection, device);
 
 	/*
 	 * Let's register all the mmapped area to ensure
@@ -847,7 +854,7 @@ vhost_user_postcopy_region_register(struct virtio_net *dev,
 	reg_struct.range.len = reg->mmap_size;
 	reg_struct.mode = UFFDIO_REGISTER_MODE_MISSING;
 
-	if (ioctl(dev->postcopy_ufd, UFFDIO_REGISTER,
+	if (ioctl(conn->postcopy_ufd, UFFDIO_REGISTER,
 				&reg_struct)) {
 		VHOST_LOG_CONFIG(ERR, "(%s) failed to register ufd for region "
 				"%" PRIx64 " - %" PRIx64 " (ufd = %d) %s\n",
@@ -855,7 +862,7 @@ vhost_user_postcopy_region_register(struct virtio_net *dev,
 				(uint64_t)reg_struct.range.start,
 				(uint64_t)reg_struct.range.start +
 				(uint64_t)reg_struct.range.len - 1,
-				dev->postcopy_ufd,
+				conn->postcopy_ufd,
 				strerror(errno));
 		return -1;
 	}
@@ -886,8 +893,10 @@ vhost_user_postcopy_register(struct virtio_net *dev, int main_fd,
 	struct rte_vhost_mem_region *reg;
 	struct vhu_msg_context ack_ctx;
 	uint32_t i;
+	struct vhost_user_connection *conn =
+		container_of(dev, struct vhost_user_connection, device);
 
-	if (!dev->postcopy_listening)
+	if (!conn->postcopy_listening)
 		return 0;
 
 	/*
@@ -1108,6 +1117,13 @@ af_unix_cleanup_device(struct virtio_net *dev, int destroy __rte_unused)
 		close(conn->slave_req_fd);
 		conn->slave_req_fd = -1;
 	}
+
+	if (conn->postcopy_ufd >= 0) {
+		close(conn->postcopy_ufd);
+		conn->postcopy_ufd = -1;
+	}
+
+	conn->postcopy_listening = 0;
 }
 
 static int
@@ -1145,6 +1161,87 @@ af_unix_set_log_base(struct virtio_net *dev, const struct vhu_msg_context *ctx)
 	return 0;
 }
 
+static int
+af_unix_set_postcopy_advise(struct virtio_net *dev, struct vhu_msg_context *ctx)
+{
+	struct vhost_user_connection *conn =
+		container_of(dev, struct vhost_user_connection, device);
+
+#ifdef RTE_LIBRTE_VHOST_POSTCOPY
+	struct uffdio_api api_struct;
+
+	if (validate_msg_fds(dev, ctx, 0) != 0)
+		return RTE_VHOST_MSG_RESULT_ERR;
+
+	conn->postcopy_ufd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
+
+	if (conn->postcopy_ufd == -1) {
+		VHOST_LOG_CONFIG(ERR, "(%s) userfaultfd not available: %s\n",
+			dev->ifname, strerror(errno));
+		return RTE_VHOST_MSG_RESULT_ERR;
+	}
+	api_struct.api = UFFD_API;
+	api_struct.features = 0;
+	if (ioctl(conn->postcopy_ufd, UFFDIO_API, &api_struct)) {
+		VHOST_LOG_CONFIG(ERR, "(%s) UFFDIO_API ioctl failure: %s\n",
+			dev->ifname, strerror(errno));
+		close(conn->postcopy_ufd);
+		conn->postcopy_ufd = -1;
+		return RTE_VHOST_MSG_RESULT_ERR;
+	}
+	ctx->fds[0] = conn->postcopy_ufd;
+	ctx->fd_num = 1;
+
+	return RTE_VHOST_MSG_RESULT_REPLY;
+#else
+	conn->postcopy_ufd = -1;
+	ctx->fd_num = 0;
+
+	return RTE_VHOST_MSG_RESULT_ERR;
+#endif
+}
+
+static int
+af_unix_set_postcopy_listen(struct virtio_net *dev, struct vhu_msg_context *ctx)
+{
+	struct vhost_user_connection *conn =
+		container_of(dev, struct vhost_user_connection, device);
+
+	if (validate_msg_fds(dev, ctx, 0) != 0)
+		return RTE_VHOST_MSG_RESULT_ERR;
+
+	if (dev->mem && dev->mem->nregions) {
+		VHOST_LOG_CONFIG(ERR, "(%s) regions already registered at postcopy-listen\n",
+				dev->ifname);
+		return RTE_VHOST_MSG_RESULT_ERR;
+	}
+	conn->postcopy_listening = 1;
+
+	return RTE_VHOST_MSG_RESULT_OK;
+}
+
+static int
+af_unix_set_postcopy_end(struct virtio_net *dev, struct vhu_msg_context *ctx)
+{
+	struct vhost_user_connection *conn =
+		container_of(dev, struct vhost_user_connection, device);
+
+	if (validate_msg_fds(dev, ctx, 0) != 0)
+		return RTE_VHOST_MSG_RESULT_ERR;
+
+	conn->postcopy_listening = 0;
+	if (conn->postcopy_ufd >= 0) {
+		close(conn->postcopy_ufd);
+		conn->postcopy_ufd = -1;
+	}
+
+	ctx->msg.payload.u64 = 0;
+	ctx->msg.size = sizeof(ctx->msg.payload.u64);
+	ctx->fd_num = 0;
+
+	return RTE_VHOST_MSG_RESULT_REPLY;
+}
+
 const struct vhost_transport_ops af_unix_trans_ops = {
 	.socket_size = sizeof(struct af_unix_socket),
 	.device_size = sizeof(struct vhost_user_connection),
@@ -1160,4 +1257,7 @@ const struct vhost_transport_ops af_unix_trans_ops = {
 	.map_mem_regions = af_unix_map_mem_regions,
 	.unmap_mem_regions = af_unix_unmap_mem_regions,
 	.set_log_base = af_unix_set_log_base,
+	.set_postcopy_advise = af_unix_set_postcopy_advise,
+	.set_postcopy_listen = af_unix_set_postcopy_listen,
+	.set_postcopy_end = af_unix_set_postcopy_end,
 };
