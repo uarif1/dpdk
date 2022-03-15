@@ -62,6 +62,7 @@ typedef enum VhostUserRequest {
 	VHOST_USER_MAX = 41
 } VhostUserRequest;
 
+const char *vhost_message_str[VHOST_USER_MAX];
 typedef enum VhostUserSlaveRequest {
 	VHOST_USER_SLAVE_NONE = 0,
 	VHOST_USER_SLAVE_IOTLB_MSG = 1,
@@ -172,7 +173,6 @@ int vhost_user_msg_handler(int vid, const struct vhu_msg_context *ctx_);
 int add_guest_pages(struct virtio_net *dev,
 		   struct rte_vhost_mem_region *reg,
 		   uint64_t page_size);
-int validate_msg_fds(struct virtio_net *dev, struct vhu_msg_context *ctx, int expected_fds);
 int vhost_user_iotlb_miss(struct virtio_net *dev, uint64_t iova, uint8_t perm);
 void close_msg_fds(struct vhu_msg_context *ctx);
 #endif

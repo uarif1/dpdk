@@ -62,6 +62,27 @@ static int vhost_user_start_client(struct vhost_user_socket *vsocket);
 static int create_unix_socket(struct vhost_user_socket *vsocket);
 static void vhost_user_read_cb(int connfd, void *dat, int *remove);
 static int read_vhost_message(struct virtio_net *dev, int sockfd, struct vhu_msg_context *ctx);
+static int validate_msg_fds(struct virtio_net *dev, struct vhu_msg_context *ctx, int expected_fds);
+
+/*
+ * Ensure the expected number of FDs is received,
+ * close all FDs and return an error if this is not the case.
+ */
+static int
+validate_msg_fds(struct virtio_net *dev, struct vhu_msg_context *ctx, int expected_fds)
+{
+	if (ctx->fd_num == expected_fds)
+		return 0;
+
+	VHOST_LOG_CONFIG(ERR, "(%s) expect %d FDs for request %s, received %d\n",
+		dev->ifname, expected_fds,
+		vhost_message_str[ctx->msg.request.master],
+		ctx->fd_num);
+
+	close_msg_fds(ctx);
+
+	return -1;
+}
 
 /*
  * return bytes# of read on success or negative val on failure. Update fdnum
@@ -395,7 +416,10 @@ vhost_user_read_cb(int connfd, void *dat, int *remove)
 	struct af_unix_socket *af_vsocket =
 		container_of(vsocket, struct af_unix_socket, socket);
 	struct vhu_msg_context ctx;
+	struct virtio_net *dev;
 	int ret;
+	int request;
+	int expected_fds;
 
 	ret = read_vhost_message(&conn->device, connfd, &ctx);
 	if (ret <= 0) {
@@ -406,6 +430,58 @@ vhost_user_read_cb(int connfd, void *dat, int *remove)
 			VHOST_LOG_CONFIG(INFO,
 				"vhost peer closed\n");
 		goto err;
+	}
+	dev = get_device(conn->device.vid);
+	if (dev == NULL)
+		goto err;
+
+	request = ctx.msg.request.master;
+	switch (request) {
+	case VHOST_USER_GET_FEATURES:
+	case VHOST_USER_SET_FEATURES:
+	case VHOST_USER_SET_OWNER:
+	case VHOST_USER_RESET_OWNER:
+	case VHOST_USER_SET_VRING_NUM:
+	case VHOST_USER_SET_VRING_ADDR:
+	case VHOST_USER_SET_VRING_BASE:
+	case VHOST_USER_GET_VRING_BASE:
+	case VHOST_USER_GET_PROTOCOL_FEATURES:
+	case VHOST_USER_SET_PROTOCOL_FEATURES:
+	case VHOST_USER_GET_QUEUE_NUM:
+	case VHOST_USER_SET_VRING_ENABLE:
+	case VHOST_USER_SEND_RARP:
+	case VHOST_USER_NET_SET_MTU:
+	case VHOST_USER_IOTLB_MSG:
+	case VHOST_USER_CRYPTO_CREATE_SESS:
+	case VHOST_USER_CRYPTO_CLOSE_SESS:
+	case VHOST_USER_POSTCOPY_ADVISE:
+	case VHOST_USER_POSTCOPY_LISTEN:
+	case VHOST_USER_POSTCOPY_END:
+	case VHOST_USER_GET_INFLIGHT_FD:
+	case VHOST_USER_SET_STATUS:
+	case VHOST_USER_GET_STATUS:
+		if (validate_msg_fds(dev, &ctx, 0) != 0)
+			goto err;
+		break;
+	case VHOST_USER_SET_MEM_TABLE:
+		if (validate_msg_fds(dev, &ctx, ctx.msg.payload.memory.nregions) != 0)
+			goto err;
+		break;
+	case VHOST_USER_SET_VRING_CALL:
+	case VHOST_USER_SET_VRING_ERR:
+	case VHOST_USER_SET_VRING_KICK:
+		expected_fds = (ctx.msg.payload.u64 & VHOST_USER_VRING_NOFD_MASK) ? 0 : 1;
+		if (validate_msg_fds(dev, &ctx, expected_fds) != 0)
+			goto err;
+		break;
+	case VHOST_USER_SET_LOG_BASE:
+	case VHOST_USER_SET_LOG_FD:
+	case VHOST_USER_SET_SLAVE_REQ_FD:
+	case VHOST_USER_SET_INFLIGHT_FD:
+		if (validate_msg_fds(dev, &ctx, 1) != 0)
+			goto err;
+	default:
+		break;
 	}
 
 	ret = vhost_user_msg_handler(conn->device.vid, &ctx);
