@@ -35,20 +35,20 @@ virtio_user_read_dev_config(struct virtio_hw *hw, size_t offset,
 	int i;
 	struct virtio_user_dev *dev = virtio_user_get_dev(hw);
 
-	if (offset == offsetof(struct virtio_net_config, mac) &&
+	if (offset == offsetof(struct dpdk_virtio_net_config, mac) &&
 	    length == RTE_ETHER_ADDR_LEN) {
 		for (i = 0; i < RTE_ETHER_ADDR_LEN; ++i)
 			((uint8_t *)dst)[i] = dev->mac_addr[i];
 		return;
 	}
 
-	if (offset == offsetof(struct virtio_net_config, status)) {
+	if (offset == offsetof(struct dpdk_virtio_net_config, status)) {
 		virtio_user_dev_update_link_state(dev);
 
 		*(uint16_t *)dst = dev->net_status;
 	}
 
-	if (offset == offsetof(struct virtio_net_config, max_virtqueue_pairs))
+	if (offset == offsetof(struct dpdk_virtio_net_config, max_virtqueue_pairs))
 		*(uint16_t *)dst = dev->max_queue_pairs;
 }
 
@@ -59,8 +59,8 @@ virtio_user_write_dev_config(struct virtio_hw *hw, size_t offset,
 	int i;
 	struct virtio_user_dev *dev = virtio_user_get_dev(hw);
 
-	if ((offset == offsetof(struct virtio_net_config, mac)) &&
-	    (length == RTE_ETHER_ADDR_LEN)) {
+	if (offset == offsetof(struct dpdk_virtio_net_config, mac) &&
+	    length == RTE_ETHER_ADDR_LEN) {
 		for (i = 0; i < RTE_ETHER_ADDR_LEN; ++i)
 			dev->mac_addr[i] = ((const uint8_t *)src)[i];
 		virtio_user_dev_set_mac(dev);

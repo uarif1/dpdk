@@ -6,7 +6,9 @@
 #define _VIRTQUEUE_H_
 
 #include <stdint.h>
-
+#ifdef RTE_EXEC_ENV_LINUX
+#include <linux/virtio_net.h>
+#endif
 #include <rte_atomic.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
@@ -145,6 +147,7 @@ enum { VTNET_RQ = 0, VTNET_TQ = 1, VTNET_CQ = 2 };
  */
 #define VQ_RING_DESC_CHAIN_END 32768
 
+#ifndef RTE_EXEC_ENV_LINUX
 /**
  * Control the RX mode, ie. promiscuous, allmulti, etc...
  * All commands require an "out" sg entry containing a 1 byte
@@ -201,6 +204,68 @@ struct virtio_net_ctrl_mac {
 #define VIRTIO_NET_CTRL_VLAN_ADD 0
 #define VIRTIO_NET_CTRL_VLAN_DEL 1
 
+/*
+ * Control link announce acknowledgment
+ *
+ * The command VIRTIO_NET_CTRL_ANNOUNCE_ACK is used to indicate that
+ * driver has received the notification; device would clear the
+ * VIRTIO_NET_S_ANNOUNCE bit in the status field after it receives
+ * this command.
+ */
+#define VIRTIO_NET_CTRL_ANNOUNCE     3
+#define VIRTIO_NET_CTRL_ANNOUNCE_ACK 0
+
+struct virtio_net_ctrl_hdr {
+	uint8_t class;
+	uint8_t cmd;
+} __rte_packed;
+
+typedef uint8_t virtio_net_ctrl_ack;
+
+#define VIRTIO_NET_OK     0
+#define VIRTIO_NET_ERR    1
+
+
+/**
+ * This is the first element of the scatter-gather list.  If you don't
+ * specify GSO or CSUM features, you can simply ignore the header.
+ */
+struct virtio_net_hdr {
+#define VIRTIO_NET_HDR_F_NEEDS_CSUM 1    /**< Use csum_start,csum_offset*/
+#define VIRTIO_NET_HDR_F_DATA_VALID 2    /**< Checksum is valid */
+	uint8_t flags;
+#define VIRTIO_NET_HDR_GSO_NONE     0    /**< Not a GSO frame */
+#define VIRTIO_NET_HDR_GSO_TCPV4    1    /**< GSO frame, IPv4 TCP (TSO) */
+#define VIRTIO_NET_HDR_GSO_UDP      3    /**< GSO frame, IPv4 UDP (UFO) */
+#define VIRTIO_NET_HDR_GSO_TCPV6    4    /**< GSO frame, IPv6 TCP */
+#define VIRTIO_NET_HDR_GSO_ECN      0x80 /**< TCP has ECN set */
+	uint8_t gso_type;
+	uint16_t hdr_len;     /**< Ethernet + IP + tcp/udp hdrs */
+	uint16_t gso_size;    /**< Bytes to append to hdr_len per frame */
+	uint16_t csum_start;  /**< Position to start checksumming from */
+	uint16_t csum_offset; /**< Offset after that to place checksum */
+};
+
+/**
+ * This is the version of the header to use when the MRG_RXBUF
+ * feature has been negotiated.
+ */
+struct virtio_net_hdr_mrg_rxbuf {
+	struct   virtio_net_hdr hdr;
+	uint16_t num_buffers; /**< Number of merged rx buffers */
+};
+
+#endif
+
+/* If multiqueue is provided by host, then we support it. */
+#define VIRTIO_NET_CTRL_MQ   4
+
+#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET        0
+#define VIRTIO_NET_CTRL_MQ_RSS_CONFIG          1
+
+#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MIN        1
+#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MAX        0x8000
+
 /**
  * RSS control
  *
@@ -222,27 +287,6 @@ struct virtio_net_ctrl_rss {
 	uint8_t hash_key_length;
 	uint8_t hash_key_data[VIRTIO_NET_RSS_KEY_SIZE];
 };
-
-/*
- * Control link announce acknowledgement
- *
- * The command VIRTIO_NET_CTRL_ANNOUNCE_ACK is used to indicate that
- * driver has received the notification; device would clear the
- * VIRTIO_NET_S_ANNOUNCE bit in the status field after it receives
- * this command.
- */
-#define VIRTIO_NET_CTRL_ANNOUNCE     3
-#define VIRTIO_NET_CTRL_ANNOUNCE_ACK 0
-
-struct virtio_net_ctrl_hdr {
-	uint8_t class;
-	uint8_t cmd;
-} __rte_packed;
-
-typedef uint8_t virtio_net_ctrl_ack;
-
-#define VIRTIO_NET_OK     0
-#define VIRTIO_NET_ERR    1
 
 #define VIRTIO_MAX_CTRL_DATA 2048
 
@@ -310,44 +354,8 @@ struct virtqueue {
 	uint16_t  *notify_addr;
 	struct rte_mbuf **sw_ring;  /**< RX software ring. */
 	struct vq_desc_extra vq_descx[0];
-};
 
-/* If multiqueue is provided by host, then we support it. */
-#define VIRTIO_NET_CTRL_MQ   4
-
-#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_SET        0
-#define VIRTIO_NET_CTRL_MQ_RSS_CONFIG          1
-
-#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MIN        1
-#define VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MAX        0x8000
-
-/**
- * This is the first element of the scatter-gather list.  If you don't
- * specify GSO or CSUM features, you can simply ignore the header.
- */
-struct virtio_net_hdr {
-#define VIRTIO_NET_HDR_F_NEEDS_CSUM 1    /**< Use csum_start,csum_offset*/
-#define VIRTIO_NET_HDR_F_DATA_VALID 2    /**< Checksum is valid */
-	uint8_t flags;
-#define VIRTIO_NET_HDR_GSO_NONE     0    /**< Not a GSO frame */
-#define VIRTIO_NET_HDR_GSO_TCPV4    1    /**< GSO frame, IPv4 TCP (TSO) */
-#define VIRTIO_NET_HDR_GSO_UDP      3    /**< GSO frame, IPv4 UDP (UFO) */
-#define VIRTIO_NET_HDR_GSO_TCPV6    4    /**< GSO frame, IPv6 TCP */
-#define VIRTIO_NET_HDR_GSO_ECN      0x80 /**< TCP has ECN set */
-	uint8_t gso_type;
-	uint16_t hdr_len;     /**< Ethernet + IP + tcp/udp hdrs */
-	uint16_t gso_size;    /**< Bytes to append to hdr_len per frame */
-	uint16_t csum_start;  /**< Position to start checksumming from */
-	uint16_t csum_offset; /**< Offset after that to place checksum */
-};
-
-/**
- * This is the version of the header to use when the MRG_RXBUF
- * feature has been negotiated.
- */
-struct virtio_net_hdr_mrg_rxbuf {
-	struct   virtio_net_hdr hdr;
-	uint16_t num_buffers; /**< Number of merged rx buffers */
+	const struct rte_memzone *mz; /**< memzone backing vring */
 };
 
 /* Region reserved to allow for transmit header and indirect ring */
@@ -414,7 +422,7 @@ virtqueue_disable_intr_packed(struct virtqueue *vq)
 {
 	if (vq->vq_packed.event_flags_shadow != RING_EVENT_FLAGS_DISABLE) {
 		vq->vq_packed.event_flags_shadow = RING_EVENT_FLAGS_DISABLE;
-		vq->vq_packed.ring.driver->desc_event_flags =
+		vq->vq_packed.ring.driver->flags =
 			vq->vq_packed.event_flags_shadow;
 	}
 }
@@ -448,7 +456,7 @@ virtqueue_enable_intr_packed(struct virtqueue *vq)
 {
 	if (vq->vq_packed.event_flags_shadow == RING_EVENT_FLAGS_DISABLE) {
 		vq->vq_packed.event_flags_shadow = RING_EVENT_FLAGS_ENABLE;
-		vq->vq_packed.ring.driver->desc_event_flags =
+		vq->vq_packed.ring.driver->flags =
 			vq->vq_packed.event_flags_shadow;
 	}
 }
@@ -600,7 +608,7 @@ virtqueue_kick_prepare_packed(struct virtqueue *vq)
 	 * Ensure updated data is visible to vhost before reading the flags.
 	 */
 	virtio_mb(vq->hw->weak_barriers);
-	flags = vq->vq_packed.ring.device->desc_event_flags;
+	flags = vq->vq_packed.ring.device->flags;
 
 	return flags != RING_EVENT_FLAGS_DISABLE;
 }

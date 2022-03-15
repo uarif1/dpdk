@@ -535,7 +535,7 @@ vhost_vdpa_setup(struct virtio_user_dev *dev)
 	}
 
 	if (ioctl(data->vhostfd, VHOST_VDPA_GET_DEVICE_ID, &did) < 0 ||
-			did != VIRTIO_ID_NETWORK) {
+			did != VIRTIO_ID_NET) {
 		PMD_DRV_LOG(ERR, "Invalid vdpa device ID: %u", did);
 		close(data->vhostfd);
 		free(data);

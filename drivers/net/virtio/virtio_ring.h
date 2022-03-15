@@ -6,9 +6,13 @@
 #define _VIRTIO_RING_H_
 
 #include <stdint.h>
+#ifdef RTE_EXEC_ENV_LINUX
+#include <linux/virtio_ring.h>
+#endif
 
 #include <rte_common.h>
 
+#ifndef RTE_EXEC_ENV_LINUX
 /* This marks a buffer as continuing via the next field. */
 #define VRING_DESC_F_NEXT       1
 /* This marks a buffer as write-only (otherwise read-only). */
@@ -73,19 +77,9 @@ struct vring_packed_desc {
 	uint16_t flags;
 };
 
-#define RING_EVENT_FLAGS_ENABLE 0x0
-#define RING_EVENT_FLAGS_DISABLE 0x1
-#define RING_EVENT_FLAGS_DESC 0x2
 struct vring_packed_desc_event {
 	uint16_t desc_event_off_wrap;
 	uint16_t desc_event_flags;
-};
-
-struct vring_packed {
-	unsigned int num;
-	struct vring_packed_desc *desc;
-	struct vring_packed_desc_event *driver;
-	struct vring_packed_desc_event *device;
 };
 
 struct vring {
@@ -128,8 +122,28 @@ struct vring {
 #define vring_used_event(vr)  ((vr)->avail->ring[(vr)->num])
 #define vring_avail_event(vr) (*(uint16_t *)&(vr)->used->ring[(vr)->num])
 
+/*
+ * The following is used with VIRTIO_RING_F_EVENT_IDX.
+ * Assuming a given event_idx value from the other size, if we have
+ * just incremented index from old to new_idx, should we trigger an
+ * event?
+ */
+static inline int
+vring_need_event(uint16_t event_idx, uint16_t new_idx, uint16_t old)
+{
+	return (uint16_t)(new_idx - event_idx - 1) < (uint16_t)(new_idx - old);
+}
+#endif
+
+struct vring_packed {
+	unsigned int num;
+	struct vring_packed_desc *desc;
+	struct vring_packed_desc_event *driver;
+	struct vring_packed_desc_event *device;
+};
+
 static inline size_t
-vring_size(struct virtio_hw *hw, unsigned int num, unsigned long align)
+dpdk_vring_size(struct virtio_hw *hw, unsigned int num, unsigned long align)
 {
 	size_t size;
 
@@ -174,15 +188,26 @@ vring_init_packed(struct vring_packed *vr, uint8_t *p, unsigned long align,
 }
 
 /*
- * The following is used with VIRTIO_RING_F_EVENT_IDX.
- * Assuming a given event_idx value from the other size, if we have
- * just incremented index from old to new_idx, should we trigger an
- * event?
+ * VRING_PACKED_DESC_F_AVAIL and VRING_PACKED_DESC_F_USED are defined as 7 and 15
+ * respectively in C standard library header files (instead of 1 << 7 and 1 << 15).
  */
-static inline int
-vring_need_event(uint16_t event_idx, uint16_t new_idx, uint16_t old)
-{
-	return (uint16_t)(new_idx - event_idx - 1) < (uint16_t)(new_idx - old);
-}
+#ifdef VRING_PACKED_DESC_F_AVAIL
+#undef VRING_PACKED_DESC_F_AVAIL
+#endif
+#ifdef VRING_PACKED_DESC_F_USED
+#undef VRING_PACKED_DESC_F_USED
+#endif
+/* This flag means the descriptor was made available by the driver */
+#define VRING_PACKED_DESC_F_AVAIL	(1 << 7)
+/* This flag means the descriptor was used by the device */
+#define VRING_PACKED_DESC_F_USED	(1 << 15)
+
+/* Frequently used combinations */
+#define VRING_PACKED_DESC_F_AVAIL_USED	(VRING_PACKED_DESC_F_AVAIL | \
+					 VRING_PACKED_DESC_F_USED)
+
+#define RING_EVENT_FLAGS_ENABLE 0x0
+#define RING_EVENT_FLAGS_DISABLE 0x1
+#define RING_EVENT_FLAGS_DESC 0x2
 
 #endif /* _VIRTIO_RING_H_ */

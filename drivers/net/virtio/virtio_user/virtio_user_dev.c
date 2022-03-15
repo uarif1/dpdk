@@ -272,7 +272,7 @@ virtio_user_dev_set_mac(struct virtio_user_dev *dev)
 		return -ENOTSUP;
 
 	ret = dev->ops->set_config(dev, dev->mac_addr,
-			offsetof(struct virtio_net_config, mac),
+			offsetof(struct dpdk_virtio_net_config, mac),
 			RTE_ETHER_ADDR_LEN);
 	if (ret)
 		PMD_DRV_LOG(ERR, "(%s) Failed to set MAC address in device", dev->path);
@@ -292,7 +292,7 @@ virtio_user_dev_get_mac(struct virtio_user_dev *dev)
 		return -ENOTSUP;
 
 	ret = dev->ops->get_config(dev, dev->mac_addr,
-			offsetof(struct virtio_net_config, mac),
+			offsetof(struct dpdk_virtio_net_config, mac),
 			RTE_ETHER_ADDR_LEN);
 	if (ret)
 		PMD_DRV_LOG(ERR, "(%s) Failed to get MAC address from device", dev->path);

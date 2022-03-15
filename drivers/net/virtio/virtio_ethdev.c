@@ -545,7 +545,7 @@ virtio_init_queue(struct rte_eth_dev *dev, uint16_t queue_idx)
 	/*
 	 * Reserve a memzone for vring elements
 	 */
-	size = vring_size(hw, vq_size, VIRTIO_VRING_ALIGN);
+	size = dpdk_vring_size(hw, vq_size, VIRTIO_VRING_ALIGN);
 	vq->vq_ring_size = RTE_ALIGN_CEIL(size, VIRTIO_VRING_ALIGN);
 	PMD_INIT_LOG(DEBUG, "vring_size: %d, rounded_vring_size: %d",
 		     size, vq->vq_ring_size);
@@ -1247,7 +1247,7 @@ static void
 virtio_set_hwaddr(struct virtio_hw *hw)
 {
 	virtio_write_dev_config(hw,
-			offsetof(struct virtio_net_config, mac),
+			offsetof(struct dpdk_virtio_net_config, mac),
 			&hw->mac_addr, RTE_ETHER_ADDR_LEN);
 }
 
@@ -1256,7 +1256,7 @@ virtio_get_hwaddr(struct virtio_hw *hw)
 {
 	if (virtio_with_feature(hw, VIRTIO_NET_F_MAC)) {
 		virtio_read_dev_config(hw,
-			offsetof(struct virtio_net_config, mac),
+			offsetof(struct dpdk_virtio_net_config, mac),
 			&hw->mac_addr, RTE_ETHER_ADDR_LEN);
 	} else {
 		rte_eth_random_addr(&hw->mac_addr[0]);
@@ -1514,10 +1514,10 @@ virtio_ethdev_negotiate_features(struct virtio_hw *hw, uint64_t req_features)
 
 	/* If supported, ensure MTU value is valid before acknowledging it. */
 	if (host_features & req_features & (1ULL << VIRTIO_NET_F_MTU)) {
-		struct virtio_net_config config;
+		struct dpdk_virtio_net_config config;
 
 		virtio_read_dev_config(hw,
-			offsetof(struct virtio_net_config, mtu),
+			offsetof(struct dpdk_virtio_net_config, mtu),
 			&config.mtu, sizeof(config.mtu));
 
 		if (config.mtu < RTE_ETHER_MIN_MTU)
@@ -1672,7 +1672,7 @@ virtio_interrupt_handler(void *param)
 
 		if (virtio_with_feature(hw, VIRTIO_NET_F_STATUS)) {
 			virtio_read_dev_config(hw,
-				offsetof(struct virtio_net_config, status),
+				offsetof(struct dpdk_virtio_net_config, status),
 				&status, sizeof(status));
 			if (status & VIRTIO_NET_S_ANNOUNCE) {
 				virtio_notify_peers(dev);
@@ -1848,15 +1848,15 @@ virtio_get_speed_duplex(struct rte_eth_dev *eth_dev,
 			struct rte_eth_link *link)
 {
 	struct virtio_hw *hw = eth_dev->data->dev_private;
-	struct virtio_net_config *config;
-	struct virtio_net_config local_config;
+	struct dpdk_virtio_net_config *config;
+	struct dpdk_virtio_net_config local_config;
 
 	config = &local_config;
 	virtio_read_dev_config(hw,
-		offsetof(struct virtio_net_config, speed),
+		offsetof(struct dpdk_virtio_net_config, speed),
 		&config->speed, sizeof(config->speed));
 	virtio_read_dev_config(hw,
-		offsetof(struct virtio_net_config, duplex),
+		offsetof(struct dpdk_virtio_net_config, duplex),
 		&config->duplex, sizeof(config->duplex));
 	hw->speed = config->speed;
 	hw->duplex = config->duplex;
@@ -1945,11 +1945,11 @@ virtio_to_ethdev_rss_offloads(uint64_t virtio_hash_types)
 static int
 virtio_dev_get_rss_config(struct virtio_hw *hw, uint32_t *rss_hash_types)
 {
-	struct virtio_net_config local_config;
-	struct virtio_net_config *config = &local_config;
+	struct dpdk_virtio_net_config local_config;
+	struct dpdk_virtio_net_config *config = &local_config;
 
 	virtio_read_dev_config(hw,
-			offsetof(struct virtio_net_config, rss_max_key_size),
+			offsetof(struct dpdk_virtio_net_config, rss_max_key_size),
 			&config->rss_max_key_size,
 			sizeof(config->rss_max_key_size));
 	if (config->rss_max_key_size < VIRTIO_NET_RSS_KEY_SIZE) {
@@ -1959,7 +1959,7 @@ virtio_dev_get_rss_config(struct virtio_hw *hw, uint32_t *rss_hash_types)
 	}
 
 	virtio_read_dev_config(hw,
-			offsetof(struct virtio_net_config,
+			offsetof(struct dpdk_virtio_net_config,
 				rss_max_indirection_table_length),
 			&config->rss_max_indirection_table_length,
 			sizeof(config->rss_max_indirection_table_length));
@@ -1970,7 +1970,7 @@ virtio_dev_get_rss_config(struct virtio_hw *hw, uint32_t *rss_hash_types)
 	}
 
 	virtio_read_dev_config(hw,
-			offsetof(struct virtio_net_config, supported_hash_types),
+			offsetof(struct dpdk_virtio_net_config, supported_hash_types),
 			&config->supported_hash_types,
 			sizeof(config->supported_hash_types));
 	if ((config->supported_hash_types & VIRTIO_NET_HASH_TYPE_MASK) == 0) {
@@ -2204,8 +2204,8 @@ static int
 virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 {
 	struct virtio_hw *hw = eth_dev->data->dev_private;
-	struct virtio_net_config *config;
-	struct virtio_net_config local_config;
+	struct dpdk_virtio_net_config *config;
+	struct dpdk_virtio_net_config local_config;
 	int ret;
 
 	/* Reset the device although not necessary at startup */
@@ -2263,12 +2263,12 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 		config = &local_config;
 
 		virtio_read_dev_config(hw,
-			offsetof(struct virtio_net_config, mac),
+			offsetof(struct dpdk_virtio_net_config, mac),
 			&config->mac, sizeof(config->mac));
 
 		if (virtio_with_feature(hw, VIRTIO_NET_F_STATUS)) {
 			virtio_read_dev_config(hw,
-				offsetof(struct virtio_net_config, status),
+				offsetof(struct dpdk_virtio_net_config, status),
 				&config->status, sizeof(config->status));
 		} else {
 			PMD_INIT_LOG(DEBUG,
@@ -2279,7 +2279,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 		if (virtio_with_feature(hw, VIRTIO_NET_F_MQ) ||
 				virtio_with_feature(hw, VIRTIO_NET_F_RSS)) {
 			virtio_read_dev_config(hw,
-				offsetof(struct virtio_net_config, max_virtqueue_pairs),
+				offsetof(struct dpdk_virtio_net_config, max_virtqueue_pairs),
 				&config->max_virtqueue_pairs,
 				sizeof(config->max_virtqueue_pairs));
 		} else {
@@ -2292,7 +2292,7 @@ virtio_init_device(struct rte_eth_dev *eth_dev, uint64_t req_features)
 
 		if (virtio_with_feature(hw, VIRTIO_NET_F_MTU)) {
 			virtio_read_dev_config(hw,
-				offsetof(struct virtio_net_config, mtu),
+				offsetof(struct dpdk_virtio_net_config, mtu),
 				&config->mtu,
 				sizeof(config->mtu));
 
@@ -2972,7 +2972,7 @@ virtio_dev_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_complet
 	} else if (virtio_with_feature(hw, VIRTIO_NET_F_STATUS)) {
 		PMD_INIT_LOG(DEBUG, "Get link status from hw");
 		virtio_read_dev_config(hw,
-				offsetof(struct virtio_net_config, status),
+				offsetof(struct dpdk_virtio_net_config, status),
 				&status, sizeof(status));
 		if ((status & VIRTIO_NET_S_LINK_UP) == 0) {
 			link.link_status = RTE_ETH_LINK_DOWN;

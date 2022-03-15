@@ -7,6 +7,9 @@
 #define _VIRTIO_H_
 
 #include <rte_ether.h>
+#ifdef RTE_EXEC_ENV_LINUX
+#include <linux/virtio_ids.h>
+#endif
 
 /* The feature bitmap for virtio net */
 #define VIRTIO_NET_F_CSUM	0	/* Host handles pkts w/ partial csum */
@@ -22,7 +25,7 @@
 #define VIRTIO_NET_F_HOST_ECN	13	/* Host can handle TSO[6] w/ ECN in. */
 #define VIRTIO_NET_F_HOST_UFO	14	/* Host can handle UFO in. */
 #define VIRTIO_NET_F_MRG_RXBUF	15	/* Host can merge receive buffers. */
-#define VIRTIO_NET_F_STATUS	16	/* virtio_net_config.status available */
+#define VIRTIO_NET_F_STATUS	16	/* dpdk_virtio_net_config.status available */
 #define VIRTIO_NET_F_CTRL_VQ	17	/* Control channel available */
 #define VIRTIO_NET_F_CTRL_RX	18	/* Control channel RX mode support */
 #define VIRTIO_NET_F_CTRL_VLAN	19	/* Control channel VLAN filtering */
@@ -47,14 +50,6 @@
 #define VIRTIO_F_VERSION_1		32
 #define VIRTIO_F_IOMMU_PLATFORM	33
 #define VIRTIO_F_RING_PACKED		34
-
-/*
- * Some VirtIO feature bits (currently bits 28 through 31) are
- * reserved for the transport being used (eg. virtio_ring), the
- * rest are per-device feature bits.
- */
-#define VIRTIO_TRANSPORT_F_START 28
-#define VIRTIO_TRANSPORT_F_END   34
 
 /*
  * Inorder feature indicates that all buffers are used by the device
@@ -130,14 +125,16 @@
 #define VIRTIO_MAX_VIRTQUEUE_PAIRS 8
 #define VIRTIO_MAX_VIRTQUEUES (VIRTIO_MAX_VIRTQUEUE_PAIRS * 2 + 1)
 
+#ifndef RTE_EXEC_ENV_LINUX
 /* VirtIO device IDs. */
-#define VIRTIO_ID_NETWORK  0x01
+#define VIRTIO_ID_NET      0x01
 #define VIRTIO_ID_BLOCK    0x02
 #define VIRTIO_ID_CONSOLE  0x03
 #define VIRTIO_ID_ENTROPY  0x04
 #define VIRTIO_ID_BALLOON  0x05
 #define VIRTIO_ID_IOMEMORY 0x06
 #define VIRTIO_ID_9P       0x09
+#endif
 
 /* Status byte for guest to report progress. */
 #define VIRTIO_CONFIG_STATUS_RESET		0x00
@@ -163,7 +160,7 @@
  * config space; it is just a shadow structure.
  *
  */
-struct virtio_net_config {
+struct dpdk_virtio_net_config {
 	/* The config defining mac address (if VIRTIO_NET_F_MAC) */
 	uint8_t    mac[RTE_ETHER_ADDR_LEN];
 	/* See VIRTIO_NET_F_STATUS and VIRTIO_NET_S_* above */

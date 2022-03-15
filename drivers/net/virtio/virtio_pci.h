@@ -105,7 +105,7 @@ enum virtio_msix_status {
 struct virtio_pci_dev {
 	struct virtio_hw hw;
 	struct virtio_pci_common_cfg *common_cfg;
-	struct virtio_net_config *dev_cfg;
+	struct dpdk_virtio_net_config *dev_cfg;
 	enum virtio_msix_status msix_status;
 	uint8_t *isr;
 	uint16_t *notify_base;
