@@ -21,6 +21,7 @@ struct virtnet_ctl;
 #define VIRTIO_PCI_VENDORID     0x1AF4
 #define VIRTIO_PCI_LEGACY_DEVICEID_NET 0x1000
 #define VIRTIO_PCI_MODERN_DEVICEID_NET 0x1041
+#define VIRTIO_PCI_MODERN_DEVICEID_VHOST_USER 0x106b
 
 /* VirtIO ABI version, this must match exactly. */
 #define VIRTIO_PCI_ABI_VERSION 0
@@ -52,6 +53,10 @@ struct virtnet_ctl;
 #define VIRTIO_PCI_CAP_DEVICE_CFG	4
 /* PCI configuration access */
 #define VIRTIO_PCI_CAP_PCI_CFG		5
+/* Additional capabilities for the virtio-vhost-user device */
+#define VIRTIO_PCI_CAP_DOORBELL_CFG    6
+#define VIRTIO_PCI_CAP_NOTIFICATION_CFG 7
+#define VIRTIO_PCI_CAP_SHARED_MEMORY_CFG 8
 
 /* This is the PCI capability header: */
 struct virtio_pci_cap {

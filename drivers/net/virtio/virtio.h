@@ -183,6 +183,11 @@ struct dpdk_virtio_net_config {
 	uint32_t supported_hash_types;
 } __rte_packed;
 
+/* Fields in VIRTIO_PCI_CAP_NOTIFICATION_CFG */
+struct virtio_pci_notification_cfg {
+	uint16_t notification_select;              /* read-write */
+	uint16_t notification_msix_vector;         /* read-write */
+};
 struct virtio_hw {
 	struct virtqueue **vqs;
 	uint64_t guest_features;
@@ -225,6 +230,15 @@ struct virtio_hw {
 	uint64_t req_guest_features;
 	struct virtnet_ctl *cvq;
 	bool use_va;
+	/* virtio-vhost-user additional device resource capabilities
+	 * https://stefanha.github.io/virtio/vhost-user-slave.html#x1-2830007
+	 */
+	uint32_t    doorbell_off_multiplier;
+	uint16_t    *doorbell_base;
+	uint32_t     doorbell_length;
+	struct virtio_pci_notification_cfg *notify_cfg;
+	uint8_t     *shared_memory_cfg;
+
 };
 
 struct virtio_ops {

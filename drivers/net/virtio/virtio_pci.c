@@ -723,6 +723,18 @@ virtio_read_caps(struct rte_pci_device *pci_dev, struct virtio_hw *hw)
 		case VIRTIO_PCI_CAP_ISR_CFG:
 			dev->isr = get_cfg_addr(pci_dev, &cap);
 			break;
+		case VIRTIO_PCI_CAP_DOORBELL_CFG:
+			rte_pci_read_config(pci_dev, &hw->doorbell_off_multiplier,
+					4, pos + sizeof(cap));
+			hw->doorbell_base = get_cfg_addr(pci_dev, &cap);
+			rte_pci_read_config(pci_dev, &hw->doorbell_length, 4, pos + 10);
+			break;
+		case VIRTIO_PCI_CAP_NOTIFICATION_CFG:
+			hw->notify_cfg = get_cfg_addr(pci_dev, &cap);
+			break;
+		case VIRTIO_PCI_CAP_SHARED_MEMORY_CFG:
+			hw->shared_memory_cfg = get_cfg_addr(pci_dev, &cap);
+			break;
 		}
 
 next:

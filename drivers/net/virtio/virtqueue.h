@@ -515,6 +515,8 @@ virtio_get_queue_type(struct virtio_hw *hw, uint16_t vq_idx)
 		return VTNET_TQ;
 }
 
+#define VIRTQUEUE_NUSED(vq) ((uint16_t)((vq)->vq_split.ring.used->idx - (vq)->vq_used_cons_idx))
+
 /* virtqueue_nused has load-acquire or rte_io_rmb insed */
 static inline uint16_t
 virtqueue_nused(const struct virtqueue *vq)

@@ -60,6 +60,13 @@ DPDK_22 {
 	rte_vhost_va_from_guest_pa;
 	rte_vhost_vring_call;
 
+	vhost_destroy_device;
+	vhost_config_log_level;
+	vhost_set_ifname;
+	vhost_user_msg_handler;
+	vhost_new_device;
+	vhost_setup_virtio_net;
+
 	local: *;
 };
 
